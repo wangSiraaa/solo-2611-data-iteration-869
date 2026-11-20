@@ -55,6 +55,18 @@ class DepthLimitError(ConfCatError):
     """嵌套深度超过限制（防止循环/过深结构无限展开）。"""
 
 
+class SemanticError(ConfCatError):
+    """语义层错误（离线汇合不支持的构造、别名目标缺失等）。"""
+
+
+class MergeConflictError(ConfCatError):
+    """三路汇合存在未决冲突；调用方要求无冲突时抛出。"""
+
+    def __init__(self, message: str, conflicts: list | None = None):
+        self.conflicts = list(conflicts or [])
+        super().__init__(message)
+
+
 class CatalogError(ConfCatError):
     """目录操作错误（产品不存在、文档/路径缺失等）。"""
 

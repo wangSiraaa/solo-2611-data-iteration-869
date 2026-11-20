@@ -146,6 +146,27 @@ class Catalog:
         text = Path(path).read_text(encoding="utf-8")
         return self.publish(product, text, source_path=str(path), doc_names=doc_names)
 
+    def publish_merge(
+        self,
+        product: str,
+        result,
+        source_path: str | None = None,
+        doc_names: list[str] | None = None,
+    ):
+        """发布三路汇合结果（:class:`confcat.merge3.MergeResult`）。
+
+        存在未决冲突时拒绝发布（配置不得带着未裁定冲突进入目录）；调用方应先用
+        :func:`confcat.merge3.resolve_conflict` 或改编辑包重跑。
+        """
+        from .errors import MergeConflictError
+
+        if result.has_conflicts:
+            raise MergeConflictError(
+                f"汇合结果仍有 {len(result.conflicts)} 处未决冲突，拒绝发布", result.conflicts
+            )
+        text = result.document.to_yaml()
+        return self.publish(product, text, source_path=source_path, doc_names=doc_names)
+
     # ------------------------------------------------------------------ #
     def list_products(self) -> list[ProductInfo]:
         rows = self.conn.execute(

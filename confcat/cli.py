@@ -82,7 +82,118 @@ def main(argv: list[str] | None = None) -> int:
     p_rows.add_argument("catalog_db")
     p_rows.add_argument("task_id")
 
+    # --- 三路汇合 ------------------------------------------------------ #
+    p_merge = sub.add_parser("merge", help="三路语义汇合两包离线编辑（base/left/right YAML）")
+    p_merge.add_argument("base")
+    p_merge.add_argument("left")
+    p_merge.add_argument("right")
+    p_merge.add_argument("--out", help="写出汇合后 YAML（默认打印）")
+    p_merge.add_argument("--allow-conflicts", action="store_true", help="存在冲突仍返回 0")
+    p_merge.add_argument("--catalog-db", help="给出则发布汇合结果到该目录的 --product 产品")
+    p_merge.add_argument("--product")
+
+    # --- 对账仓 -------------------------------------------------------- #
+    p_recon_init = sub.add_parser("recon-init", help="初始化对账仓（仅建表）")
+    p_recon_init.add_argument("recon_db")
+    p_recon_init.add_argument("catalog_db")
+    p_recon_task = sub.add_parser("recon-task", help="导入某厂称重 CSV 为任务")
+    p_recon_task.add_argument("recon_db")
+    p_recon_task.add_argument("catalog_db")
+    p_recon_task.add_argument("task_id")
+    p_recon_task.add_argument("factory")
+    p_recon_task.add_argument("product")
+    p_recon_task.add_argument("doc")
+    p_recon_task.add_argument("csv_path")
+    p_recon_task.add_argument("--version", type=int)
+
+    p_recon_pair = sub.add_parser("recon-pair", help="登记/激活一对任务")
+    p_recon_pair.add_argument("recon_db")
+    p_recon_pair.add_argument("catalog_db")
+    p_recon_pair.add_argument("pair_id")
+    p_recon_pair.add_argument("--register", nargs=2, metavar=("OUT", "RECV"))
+    p_recon_pair.add_argument("--activate", type=int)
+
+    p_recon_settle = sub.add_parser("recon-settle", help="按激活任务对签日结")
+    p_recon_settle.add_argument("recon_db")
+    p_recon_settle.add_argument("catalog_db")
+    p_recon_settle.add_argument("settlement_id")
+    p_recon_settle.add_argument("pair_id")
+
+    p_recon_reopen = sub.add_parser("recon-reopen", help="按冻结来源重开复核签单")
+    p_recon_reopen.add_argument("recon_db")
+    p_recon_reopen.add_argument("catalog_db")
+    p_recon_reopen.add_argument("slip_id")
+
     args = parser.parse_args(argv)
+
+    if args.cmd == "merge":
+        from .merge3 import merge_yaml
+
+        base_text = Path(args.base).read_text(encoding="utf-8")
+        left_text = Path(args.left).read_text(encoding="utf-8")
+        right_text = Path(args.right).read_text(encoding="utf-8")
+        result = merge_yaml(base_text, left_text, right_text)
+        out_text = result.document.to_yaml()
+        if args.out:
+            Path(args.out).write_text(out_text, encoding="utf-8")
+        else:
+            print(out_text)
+        if result.conflicts:
+            for c in result.conflicts:
+                print(f"[CONFLICT {c.kind}] /{'/'.join(map(str, c.path))}", file=sys.stderr)
+        if args.catalog_db:
+            if not args.product:
+                parser.error("--catalog-db 需要 --product")
+            with Catalog(args.catalog_db) as cat:
+                info = cat.publish_merge(args.product, result)
+            _print({"product": info.product, "version": info.version, "docs": list(info.docs)})
+        return 0 if (not result.conflicts or args.allow_conflicts) else 2
+
+    if args.cmd == "recon-init":
+        from .recon import ReconciliationWarehouse
+
+        with Catalog(args.catalog_db) as cat, ReconciliationWarehouse(args.recon_db, cat):
+            pass
+        _print({"recon_db": args.recon_db, "status": "initialized"})
+        return 0
+
+    if args.cmd.startswith("recon-") and args.cmd != "recon-init":
+        from .recon import ReconciliationWarehouse
+
+        with Catalog(args.catalog_db) as cat, ReconciliationWarehouse(args.recon_db, cat) as wh:
+            if args.cmd == "recon-task":
+                summary = wh.create_weigh_task(
+                    args.task_id,
+                    args.factory,
+                    args.product,
+                    args.doc,
+                    args.csv_path,
+                    version=args.version,
+                )
+                _print(summary.__dict__)
+            elif args.cmd == "recon-pair":
+                if args.register:
+                    gen = wh.register_generation(args.pair_id, args.register[0], args.register[1])
+                    _print({"pair_id": args.pair_id, "registered_generation": gen})
+                if args.activate is not None:
+                    wh.activate_generation(args.pair_id, args.activate)
+                if args.register or args.activate is not None:
+                    _print(wh.active_pair(args.pair_id).__dict__)
+                else:
+                    _print(wh.list_generations(args.pair_id))
+            elif args.cmd == "recon-settle":
+                res = wh.settle(args.settlement_id, args.pair_id)
+                _print(
+                    {
+                        "settlement_id": res.settlement_id,
+                        "status": res.status,
+                        "slip_id": res.slip_id,
+                        "reasons": res.reasons,
+                    }
+                )
+            elif args.cmd == "recon-reopen":
+                _print(wh.reopen_slip(args.slip_id))
+        return 0
 
     if args.cmd == "publish":
         with Catalog(args.db) as cat:
